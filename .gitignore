@@ -1,3 +1,6 @@
+*.sh
+*.err
+*.out
 core*
 *.session
 .idea
