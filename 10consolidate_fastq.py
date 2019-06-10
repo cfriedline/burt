@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.2'
-#       jupytext_version: 1.0.3
+#       jupytext_version: 1.1.5
 #   kernelspec:
 #     display_name: burt
 #     language: python
@@ -86,7 +86,10 @@ all_plates.to_csv(Path(plate_map_dir, "all_plates.txt"), sep="\t", index=False)
 all_plates[all_plates.sample_name=="G-VA-1-15"]
 
 # %%
-dest_dir = "/gpfs_fs/home/eckertlab/BURT/"
+all_plates.groupby("species").count()
+
+# %%
+dest_dir1 = "/gpfs_fs/home/eckertlab/BURT/seq/round1"
 
 # %%
 first_runs = "/home/cfriedline/eckertlab/projects/burt/seq"
@@ -120,12 +123,34 @@ fastq_df1 = pd.DataFrame(fastq_data1)
 
 # %%
 def md5(fname):
-    hash_md5 = hashlib.md5()
-    with open(fname, "rb") as f:
-        for chunk in iter(lambda: f.read(4096), b""):
-            hash_md5.update(chunk)
-    return hash_md5.hexdigest()
-fastq_df1.md5 = fastq_df1.processed_fastq.apply(md5)
+    res = !md5sum {fname}
+    return res[0].split()[0]
+
+
+# %%
+jobs = []
+pool = mp.Pool()
+for f in fastq_df1.processed_fastq:
+    jobs.append(pool.apply_async(md5, (f,)))
+pool.close()
+
+# %%
+sum([x.ready() for x in jobs]), len(jobs)
+
+# %%
+pool.join()
+
+# %%
+fastq_df1["md5"] = [x.get() for x in jobs]
+
+# %%
+fastq_df1.head()
+
+# %%
+fastq_df1.to_csv("df1.txt", sep="\t", index=False)
+
+# %%
+df1 = fastq_df1.copy()
 
 
 # %%
@@ -134,43 +159,98 @@ def copy_file(s, d):
 
 pool = mp.Pool(20)
 jobs = []
-for f in fastq_files1:
+for f in df1.processed_fastq:
     s = Path(f)
-    d = Path(dest_dir, s.name)
+    d = Path(dest_dir1, s.name)
     jobs.append(pool.apply_async(copy_file, (s, d)))
 pool.close()
 
 # %%
-sum([x.ready() for x in jobs])
+sum([x.ready() for x in jobs]), len(jobs)
 
 # %%
+pool.close()
 pool.join()
 
 # %%
-second_library = "/home/cfriedline/eckertlab/Novogene/burt/merged"
+second_library = "/home/cfriedline/eckertlab/Novogene/burt"
+dest_dir2 = "/gpfs_fs/home/eckertlab/BURT/seq/round2"
 
 # these files were the result of a merge of the failed NARF libraries and the good novogene libraries using 
 # a script that trevor wrote ~/eckertlab/Novogene/burt/merge_fastq.sh
-
-# %%
-fastq_files2 = glob.glob(f"{second_library}/*.fastq.gz")
 
 # %%
 len(fastq_files2)
 
 # %%
 map2 = {}
-for root, dirs,files in os.walk(Path(second_library).parent):
+for root, dirs,files in os.walk(Path(second_library)):
     for f in files:
         if "undetermined" not in f:
             if f.endswith("fastq.gz"):
                 p = Path(root, f)
-                if p.name not in map2:
-                    map2[p.name] = []
-                if "BURT" in p.parent.name:
-                    map2[p.name].append(p)
+                if "BURT" in p.parent.name:# and p.parent.name != "BURT_tmp":
+                    if p.name not in map2:
+                        map2[p.name] = dict(lib={p.parent.name}, files=[])
+                    map2[p.name]["files"].append(p)
+                    map2[p.name]["lib"].add(p.parent.name)
 
 # %%
-map2
+df2 = pd.DataFrame(map2).T
+
+# %%
+df2["num_files"] = df2.files.apply(lambda x: len(x))
+
+# %%
+df1.library.unique()
+
+# %%
+df2[df2.num_files==2]
+
+# %%
+jobs = []
+dupes = []
+pool = mp.Pool(20)
+for f in df2[df2.num_files==1].files:
+    dest = Path(dest_dir2) / f[0].name
+    jobs.append(pool.apply_async(copy_file, (f[0], dest)))
+pool.close()
+
+# %%
+sum([x.ready() for x in jobs]), len(jobs)
+
+
+# %%
+def combine_fastq(args):
+    name, fastq_list = args
+    out_dir = "/gpfs_fs/home/eckertlab/BURT/seq/round2"
+    out_file = os.path.join(out_dir, name)
+    cmd = "zcat {} | /home/cfriedline/bin/bgzip -c > {}".format(" ".join(fastq_list), out_file)
+    return cmd
+
+def run_cmd(cmd):
+    res = !{cmd}
+    return res
+
+jobs = []
+pool = mp.Pool(20)
+for f in df2[df2.num_files==2].index:
+    files = [str(x) for x in df2.loc[f].files]
+    cmd = combine_fastq((f, files))
+    print(cmd)
+    jobs.append(
+        pool.apply_async(
+            run_cmd, (cmd,)
+        )
+    )
+
+# %%
+pool.close()
+
+# %%
+pool.join()
+
+# %%
+df2.to_csv("df2.txt", sep="\t")
 
 # %%
