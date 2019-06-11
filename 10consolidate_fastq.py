@@ -88,37 +88,51 @@ all_plates[all_plates.sample_name=="G-VA-1-15"]
 # %%
 all_plates.groupby("species").count()
 
-# %%
-dest_dir1 = "/gpfs_fs/home/eckertlab/BURT/seq/round1"
 
 # %%
-first_runs = "/home/cfriedline/eckertlab/projects/burt/seq"
+def make_df(gz_list, seq_center):
+    df = pd.DataFrame(gz_list, columns=["fastq"])
+    df["sample_name"] = df.fastq.apply(lambda path: path.name.split(".R1")[0])
+    sample_name_split = df.sample_name.str.split("-")
+    df["species"] = [x[0] for x in sample_name_split]
+    df["state"] = [x[1] for x in sample_name_split]
+    df["ind"] = [x[3] for x in sample_name_split]
+    df["popn"] = ["-".join(x[0:3]) for x in sample_name_split]
+    df["spp_popn"] = ["-".join(x[1:3]) for x in sample_name_split]
+    df["run"] = [x.parent.parent.name for x in df.fastq]
+    if seq_center == "Novogene":
+        df["run"] = "Novogene1"
+    df["lib"] = [x.parent.name for x in df.fastq]
+    df["seq_center"] = seq_center
+    return df
+
 
 # %%
-fastq_files1 = []
-fastq_map1 = {}
-for root, dirs, files in os.walk(first_runs):
-    for f in files:
-        p = Path(root, f)
-        if "fastq.gz" in p.name and ".R1." in p.name:
-            sample_name = p.name.split(".")[0]
-            library = p.parent.name
-            fastq_files1.append(dict(sample_name=sample_name,
-                                    fastq_path=str(p),
-                                    library=library))
-            
-            if sample_name not in fastq_map1:
-                fastq_map1[sample_name] = []
-            fastq_map1[sample_name].append(str(p))
+round1_root = Path("/home/cfriedline/eckertlab/projects/burt/seq")
 
 # %%
-fastq_data1 = []
-for k, v in fastq_map1.items():
-    fastq_data1.append(dict(sample_name=k, fastq_files=v, 
-                            library=list(set([Path(x).parent.name for x in v]))[0],
-                           processed_fastq=f"{Path(first_runs, 'dedupe', Path(v[0]).name)}"))
+round1_gz = list(round1_root.glob("**/*-*.R1.*.gz"))
 
-fastq_df1 = pd.DataFrame(fastq_data1)
+# %%
+round1_gz = [x for x in round1_gz if x.parent.parent.name in ["160520", "160525"]]
+
+# %%
+df1 = make_df(round1_gz, "NARF")
+
+# %%
+df1.head()
+
+# %%
+round2_root = Path("/home/cfriedline/eckertlab/Novogene/burt/demult")
+
+# %%
+round2_gz = list(round2_root.glob("*BURT*/*-*.R1.*.gz"))
+
+# %%
+df2 = make_df(round2_gz, "Novogene")
+
+# %%
+df_all = pd.concat([df1, df2])
 
 
 # %%
@@ -128,129 +142,132 @@ def md5(fname):
 
 
 # %%
+def progress(l):
+    ready = sum([x.ready() for x in l])
+    return f"{ready}/{len(l)} ({ready*100/len(l)}%)"
+
+
+# %%
 jobs = []
 pool = mp.Pool()
-for f in fastq_df1.processed_fastq:
+for f in df_all.fastq:
     jobs.append(pool.apply_async(md5, (f,)))
 pool.close()
+# pool.join()
 
 # %%
-sum([x.ready() for x in jobs]), len(jobs)
+progress(jobs)
 
 # %%
-pool.join()
-
-# %%
-fastq_df1["md5"] = [x.get() for x in jobs]
-
-# %%
-fastq_df1.head()
-
-# %%
-fastq_df1.to_csv("df1.txt", sep="\t", index=False)
-
-# %%
-df1 = fastq_df1.copy()
-
-
-# %%
-def copy_file(s, d):
-    shutil.copy(s, d)
-
-pool = mp.Pool(20)
-jobs = []
-for f in df1.processed_fastq:
-    s = Path(f)
-    d = Path(dest_dir1, s.name)
-    jobs.append(pool.apply_async(copy_file, (s, d)))
-pool.close()
-
-# %%
-sum([x.ready() for x in jobs]), len(jobs)
-
-# %%
-pool.close()
-pool.join()
-
-# %%
-second_library = "/home/cfriedline/eckertlab/Novogene/burt"
-dest_dir2 = "/gpfs_fs/home/eckertlab/BURT/seq/round2"
-
-# these files were the result of a merge of the failed NARF libraries and the good novogene libraries using 
-# a script that trevor wrote ~/eckertlab/Novogene/burt/merge_fastq.sh
-
-# %%
-len(fastq_files2)
-
-# %%
-map2 = {}
-for root, dirs,files in os.walk(Path(second_library)):
-    for f in files:
-        if "undetermined" not in f:
-            if f.endswith("fastq.gz"):
-                p = Path(root, f)
-                if "BURT" in p.parent.name:# and p.parent.name != "BURT_tmp":
-                    if p.name not in map2:
-                        map2[p.name] = dict(lib={p.parent.name}, files=[])
-                    map2[p.name]["files"].append(p)
-                    map2[p.name]["lib"].add(p.parent.name)
-
-# %%
-df2 = pd.DataFrame(map2).T
-
-# %%
-df2["num_files"] = df2.files.apply(lambda x: len(x))
-
-# %%
-df1.library.unique()
-
-# %%
-df2[df2.num_files==2]
-
-# %%
-jobs = []
-dupes = []
-pool = mp.Pool(20)
-for f in df2[df2.num_files==1].files:
-    dest = Path(dest_dir2) / f[0].name
-    jobs.append(pool.apply_async(copy_file, (f[0], dest)))
-pool.close()
-
-# %%
-sum([x.ready() for x in jobs]), len(jobs)
-
-
-# %%
-def combine_fastq(args):
-    name, fastq_list = args
-    out_dir = "/gpfs_fs/home/eckertlab/BURT/seq/round2"
-    out_file = os.path.join(out_dir, name)
-    cmd = "zcat {} | /home/cfriedline/bin/bgzip -c > {}".format(" ".join(fastq_list), out_file)
-    return cmd
-
-def run_cmd(cmd):
-    res = !{cmd}
-    return res
-
-jobs = []
-pool = mp.Pool(20)
-for f in df2[df2.num_files==2].index:
-    files = [str(x) for x in df2.loc[f].files]
-    cmd = combine_fastq((f, files))
-    print(cmd)
-    jobs.append(
-        pool.apply_async(
-            run_cmd, (cmd,)
-        )
-    )
-
-# %%
-pool.close()
+df_all["md5"] = [x.get() for x in jobs]
 
 # %%
 pool.join()
 
 # %%
-df2.to_csv("df2.txt", sep="\t")
+df_all["RGPL"] = "ILLUMINA"
+df_all["RGSM"] = df_all.sample_name
+df_all["RGLB"] = df_all.lib
+df_all["RGID"] = df_all.sample_name + "." + df_all.run + "." + df_all.lib
+
+# %%
+df_all.head()
+
+# %%
+from Bio.SeqIO.QualityIO import FastqGeneralIterator
+import gzip
+
+
+# %%
+def get_PU(fastq_file):
+    with gzip.open(fastq_file, "rt") as f:
+        for name, seq, qual in FastqGeneralIterator(f):
+            data = name.split(":")
+            instrument = data[0]
+            run_number = data[1]
+            flowcell_id = data[2]
+            lane = data[3]
+            return [flowcell_id, lane]
+flowcell_lane = df_all.fastq.apply(get_PU)
+
+# %%
+df_all["flowcell_lane"] = [".".join(x for x in y) for y in flowcell_lane]
+
+# %%
+df_all["RGPU"] = df_all.flowcell_lane + "." + df_all.sample_name
+
+
+# %%
+def get_read_num(fastq_file):
+    count = 0
+    try:
+        with gzip.open(fastq_file, "rt") as f:
+            for name, seq, qual in FastqGeneralIterator(f):
+                count+=1
+    except:
+        return -1
+    return count
+
+
+# %%
+pool = mp.Pool()
+jobs = []
+for f in df_all.fastq:
+    jobs.append(pool.apply_async(get_read_num, (f,)))
+pool.close()
+
+# %%
+progress(jobs)
+
+# %%
+df_all["num_reads"] = [x.get() for x in jobs]
+
+# %%
+df_all[df_all.num_reads==-1].fastq.values
+
+# %% [markdown]
+# ## Failed fastq files
+# These files failed. Will uncompress and recompres as follows.
+#
+# ```
+# array([PosixPath('/home/cfriedline/eckertlab/Novogene/burt/demult/BURT_10/G-VA-3-5.R1.fastq.gz'),
+#        PosixPath('/home/cfriedline/eckertlab/Novogene/burt/demult/BURT_11/G-VA-3-14.R1.fastq.gz'),
+#        PosixPath('/home/cfriedline/eckertlab/Novogene/burt/demult/BURT_12/G-VA-3-6.R1.fastq.gz'),
+#        PosixPath('/home/cfriedline/eckertlab/Novogene/burt/demult/BURT_12/G-VA-3-10.R1.fastq.gz')],
+#       dtype=object)
+# ```
+#
+# ```
+# zcat /home/cfriedline/eckertlab/Novogene/burt/demult/BURT_10/G-VA-3-5.R1.fastq.gz | gzip > /home/cfriedline/eckertlab/Novogene/burt/demult/BURT_10/G-VA-3-5.R1.fastq.gz_new.gz
+#
+# mv /home/cfriedline/eckertlab/Novogene/burt/demult/BURT_10/G-VA-3-5.R1.fastq.gz_new.gz /home/cfriedline/eckertlab/Novogene/burt/demult/BURT_10/G-VA-3-5.R1.fastq.gz
+# ```
+#       
+
+# %%
+for f in df_all[df_all.num_reads==-1].fastq.values:
+    print(f)
+    old = f
+    bak = f"{f}.bak"
+    new = f"{f}.temp"
+    !cp {old} {bak}
+    !zcat {old} | gzip > {new}
+    !mv -f {new} {old}
+
+# %%
+fixed_counts = df_all[df_all.num_reads==-1].fastq.apply(get_read_num)
+
+# %%
+for f in fixed_counts.index:
+    df_all.loc[f,"num_reads"] = fixed_counts[f]
+
+# %%
+df_all.to_csv("/gpfs_fs/home/eckertlab/BURT/seq/burt_fastq_data.txt", sep="\t")
+
+# %%
+df_all
+
+# %%
+# !cp /gpfs_fs/home/eckertlab/BURT/seq/burt_fastq_data.txt .
 
 # %%
